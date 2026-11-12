@@ -1,0 +1,96 @@
+name: Build HGhub APK for OnePlus Pad Pro
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android-arm64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract uploaded source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="$(find . -maxdepth 1 -type f -iname '*.zip' | head -n 1)"
+          if [ -z "$ARCHIVE" ]; then
+            echo "::error::请先把 HGhub 源码 ZIP 压缩包上传到仓库根目录"
+            exit 1
+          fi
+          mkdir -p source
+          unzip -q "$ARCHIVE" -d source
+          if [ ! -f source/package.json ]; then
+            echo "::error::压缩包解压后没有在 source/package.json 找到项目，请检查上传的是否为源码 ZIP"
+            find source -maxdepth 3 -type f | head -50
+            exit 1
+          fi
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: source/pnpm-lock.yaml
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"
+          echo "NDK_HOME=$SDK/ndk/28.2.13676358" >> "$GITHUB_ENV"
+
+      - name: Install Rust and Android target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Install JavaScript dependencies
+        working-directory: source
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Android project
+        working-directory: source
+        run: pnpm tauri android init --ci
+
+      - name: Build ARM64 debug APK
+        working-directory: source
+        run: pnpm tauri android build --apk --debug --target aarch64 --ci
+
+      - name: Collect APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          find source/src-tauri/gen/android/app/build/outputs/apk -type f -name '*.apk' \
+            -print -exec cp {} artifacts/HGhub_1.2.0_OnePlusPadPro_ARM64_debug.apk \;
+          test -s artifacts/HGhub_1.2.0_OnePlusPadPro_ARM64_debug.apk
+          ls -lh artifacts
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: HGhub_1.2.0_OnePlusPadPro_ARM64_debug
+          path: artifacts/*.apk
+          if-no-files-found: error
+          retention-days: 14
